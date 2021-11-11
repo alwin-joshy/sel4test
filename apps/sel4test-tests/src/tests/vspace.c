@@ -124,7 +124,316 @@ test_unmap_after_delete(env_t env)
     return sel4test_get_result();
 }
 DEFINE_TEST(VSPACE0001, "Test unmapping a page after deleting the PD", test_unmap_after_delete, true)
-#endif /* CONFIG_ARCH_AARCHxx */
+
+#define NPAGE 1024
+#define NPAGE_LARGE 256
+
+static int test_range_unmap_small(env_t env) {
+    seL4_Word map_addr = 0x10000000;
+    seL4_CPtr frames[NPAGE];
+    int error;
+
+    seL4_CPtr pgd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageGlobalDirectoryObject, 0);
+    seL4_CPtr pud = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageUpperDirectoryObject, 0);
+    seL4_CPtr pd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageDirectoryObject, 0);
+    seL4_CPtr pt = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+
+    for (int i = 0; i < NPAGE; i++) {
+        frames[i] = vka_alloc_object_leaky(&env->vka, seL4_ARM_SmallPageObject, 0);
+        test_assert(frames[i] != 0);
+    }
+
+    /* Under an Arm Hyp configuration where the CPU only supports 40bit physical addressing, we
+     * only have 3 level page tables and no PGD.
+     */
+    test_assert((seL4_PGDBits == 0) || pgd != 0);
+    test_assert(pud != 0);
+    test_assert(pd != 0);
+    test_assert(pt != 0);
+
+    seL4_CPtr vspace = (seL4_PGDBits == 0) ? pud : pgd;
+    seL4_ARM_ASIDPool_Assign(env->asid_pool, vspace);
+#if seL4_PGDBits > 0
+    /* map pud into page global directory */
+    error = seL4_ARM_PageUpperDirectory_Map(pud, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+#endif
+
+    /* map pd into page upper directory */
+    error = seL4_ARM_PageDirectory_Map(pd, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map page table into page directory */
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+     seL4_CPtr pt2 = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+    /* map page table into page directory */
+    error = seL4_ARM_PageTable_Map(pt2, vspace, map_addr + 512 * PAGE_SIZE_4K, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    for (int i = 0; i < NPAGE; i++) {
+        error = seL4_ARM_Page_Map(frames[i], vspace, map_addr + i * PAGE_SIZE_4K, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+        test_error_eq(error, 0);
+    }
+
+    error = seL4_ARM_VSpace_Range_Protect(vspace, map_addr, map_addr + NPAGE * PAGE_SIZE_4K);
+
+    test_error_eq(error, 0);
+
+    return sel4test_get_result();
+}
+DEFINE_TEST(VSPACE0011, "Test range based unmap function with small pages", test_range_unmap_small, true)
+
+static int test_range_unmap_large(env_t env) {
+    seL4_Word map_addr = 0x10000000;
+    seL4_CPtr frames[NPAGE_LARGE];
+    int error;
+
+    seL4_CPtr pgd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageGlobalDirectoryObject, 0);
+    seL4_CPtr pud = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageUpperDirectoryObject, 0);
+    seL4_CPtr pd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageDirectoryObject, 0);
+
+    for (int i = 0; i < NPAGE_LARGE; i++) {
+        frames[i] = vka_alloc_object_leaky(&env->vka, seL4_ARM_LargePageObject, 0);
+        test_assert(frames[i] != 0);
+    }
+
+    test_assert((seL4_PGDBits == 0) || pgd != 0);
+    test_assert(pud != 0);
+    test_assert(pd != 0);
+
+    seL4_CPtr vspace = (seL4_PGDBits == 0) ? pud : pgd;
+    seL4_ARM_ASIDPool_Assign(env->asid_pool, vspace);
+#if seL4_PGDBits > 0
+    /* map pud into page global directory */
+    error = seL4_ARM_PageUpperDirectory_Map(pud, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+#endif
+
+    /* map pd into page upper directory */
+    error = seL4_ARM_PageDirectory_Map(pd, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    for (int i = 0; i < NPAGE_LARGE; i++) {
+        error = seL4_ARM_Page_Map(frames[i], vspace, map_addr + i * (1 << seL4_LargePageBits), seL4_NoRights, seL4_ARM_Default_VMAttributes);
+        test_error_eq(error, 0);
+    }
+
+    seL4_CPtr pt = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+    test_assert(pt != 0);
+
+    /* Because a large page is already mapped at this level, we will not be able to map a page table*/
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_DeleteFirst);
+
+    /* Attempt to unmap the first page with too small a range*/
+    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr, map_addr + PAGE_SIZE_4K);
+    test_error_eq(error, 0);
+
+    /* Because a large page is already mapped at this level, we will not be able to map a page table*/
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_DeleteFirst);
+
+    seL4_Word end = map_addr + NPAGE_LARGE * (1 << seL4_LargePageBits);
+    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr, end);
+    test_error_eq(error, 0);
+
+    /* Since we unmapped, it we should be able to do a page table map now */
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, 0);
+
+    return sel4test_get_result();
+}
+DEFINE_TEST(VSPACE0012, "Test range based unmap function with large pages", test_range_unmap_large, true)
+
+static int test_range_unmap_small_large(env_t env) {
+    seL4_Word map_addr = 0x10000000;
+    seL4_CPtr small_frames[256];
+    int error;
+
+    seL4_CPtr pgd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageGlobalDirectoryObject, 0);
+    seL4_CPtr pud = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageUpperDirectoryObject, 0);
+    seL4_CPtr pd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageDirectoryObject, 0);
+    seL4_CPtr pt = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+
+    for (int i = 0; i < 256; i++) {
+        small_frames[i] = vka_alloc_object_leaky(&env->vka, seL4_ARM_SmallPageObject, 0);
+        test_assert(small_frames[i] != 0);
+    }
+
+    test_assert((seL4_PGDBits == 0) || pgd != 0);
+    test_assert(pud != 0);
+    test_assert(pd != 0);
+    test_assert(pt != 0);
+
+    seL4_CPtr vspace = (seL4_PGDBits == 0) ? pud : pgd;
+    seL4_ARM_ASIDPool_Assign(env->asid_pool, vspace);
+
+#if seL4_PGDBits > 0
+    /* map pud into page global directory */
+    error = seL4_ARM_PageUpperDirectory_Map(pud, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+#endif
+
+    /* map pd into page upper directory */
+    error = seL4_ARM_PageDirectory_Map(pd, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map page table into page directory */
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    for (int i = 0; i < 256; i++) {
+        error = seL4_ARM_Page_Map(small_frames[i], vspace, map_addr + i * PAGE_SIZE_4K, seL4_NoRights, seL4_ARM_Default_VMAttributes);
+        test_error_eq(error, 0);
+    }
+
+    seL4_CPtr large =  vka_alloc_object_leaky(&env->vka, seL4_ARM_LargePageObject, 0);
+    test_assert(large != 0);
+    error = seL4_ARM_Page_Map(large, vspace, map_addr + (1 << seL4_LargePageBits), seL4_NoRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, 0);
+
+    seL4_CPtr pt2 = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+    test_assert(pt2 != 0);
+
+    /* Because a large page is already mapped at this level, we will not be able to map a page table*/
+    error = seL4_ARM_PageTable_Map(pt2, vspace, map_addr + (1 << seL4_LargePageBits), seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_DeleteFirst);
+
+    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr, map_addr + 2 * (1 << seL4_LargePageBits));
+    test_error_eq(error, 0);
+
+    /* Since we unmapped, it we should be able to do a page table map now */
+    error = seL4_ARM_PageTable_Map(pt2, vspace, map_addr + (1 << seL4_LargePageBits), seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, 0);
+
+    return sel4test_get_result();
+}
+DEFINE_TEST(VSPACE0013, "Test range based unmap function with large and small pages", test_range_unmap_small_large, true)
+
+static int test_reuse_cap(env_t env) {
+    seL4_Word map_addr = 0x10000000;
+    seL4_Word map_addr_2 = 0x10005000;
+    seL4_Word map_addr_3 = 0x1000A000;
+    int error;
+
+    seL4_CPtr pgd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageGlobalDirectoryObject, 0);
+    seL4_CPtr pud = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageUpperDirectoryObject, 0);
+    seL4_CPtr pd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageDirectoryObject, 0);
+    seL4_CPtr pt = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+    seL4_CPtr frame = vka_alloc_object_leaky(&env->vka, seL4_ARM_SmallPageObject, 0);
+    /* Under an Arm Hyp configuration where the CPU only supports 40bit physical addressing, we
+     * only have 3 level page tables and no PGD.
+     */
+    test_assert((seL4_PGDBits == 0) || pgd != 0);
+    test_assert(pud != 0);
+    test_assert(pd != 0);
+    test_assert(pt != 0);
+    test_assert(frame != 0);
+
+
+    seL4_CPtr vspace = (seL4_PGDBits == 0) ? pud : pgd;
+    seL4_ARM_ASIDPool_Assign(env->asid_pool, vspace);
+#if seL4_PGDBits > 0
+    /* map pud into page global directory */
+    error = seL4_ARM_PageUpperDirectory_Map(pud, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+#endif
+
+    /* map pd into page upper directory */
+    error = seL4_ARM_PageDirectory_Map(pd, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map page table into page directory */
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map frame into the page table */
+    error = seL4_ARM_Page_Map(frame, vspace, map_addr, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* Try to remap the page at a different address - should fail */
+    error = seL4_ARM_Page_Map(frame, vspace, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_InvalidArgument);
+
+    /* Unmap it with the single page unmap version*/
+    error = seL4_ARM_Page_Unmap(frame);
+    test_error_eq(error, seL4_NoError);
+
+    /* Try to remap it again at the different address (should work this time) */
+    error = seL4_ARM_Page_Map(frame, vspace, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* Unmap it with range unmap instead of page unmap */
+    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr_2, map_addr_2 + PAGE_SIZE_4K);
+    test_error_eq(error, 0);
+
+    /* Try to remap the page at a different address */
+    error = seL4_ARM_Page_Map(frame, vspace, map_addr_3, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_InvalidArgument);
+
+    return sel4test_get_result();
+}
+
+DEFINE_TEST(VSPACE0014, "Test re-using frame cap for different vaddr after range unmap", test_reuse_cap, true)
+
+static int test_two_frames_same_vaddr(env_t env) {
+    seL4_Word map_addr = 0x10000000;
+    seL4_Word map_addr_2 = 0x10005000;
+    int error;
+
+    seL4_CPtr pgd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageGlobalDirectoryObject, 0);
+    seL4_CPtr pud = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageUpperDirectoryObject, 0);
+    seL4_CPtr pd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageDirectoryObject, 0);
+    seL4_CPtr pt = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+    seL4_CPtr frame = vka_alloc_object_leaky(&env->vka, seL4_ARM_SmallPageObject, 0);
+    seL4_CPtr frame2 = vka_alloc_object_leaky(&env->vka, seL4_ARM_SmallPageObject, 0);
+    /* Under an Arm Hyp configuration where the CPU only supports 40bit physical addressing, we
+     * only have 3 level page tables and no PGD.
+     */
+    test_assert((seL4_PGDBits == 0) || pgd != 0);
+    test_assert(pud != 0);
+    test_assert(pd != 0);
+    test_assert(pt != 0);
+    test_assert(frame != 0);
+    test_assert(frame2 != 0);
+
+
+    seL4_CPtr vspace = (seL4_PGDBits == 0) ? pud : pgd;
+    seL4_ARM_ASIDPool_Assign(env->asid_pool, vspace);
+#if seL4_PGDBits > 0
+    /* map pud into page global directory */
+    error = seL4_ARM_PageUpperDirectory_Map(pud, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+#endif
+
+    /* map pd into page upper directory */
+    error = seL4_ARM_PageDirectory_Map(pd, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map page table into page directory */
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map frame into the page table */
+    error = seL4_ARM_Page_Map(frame, vspace, map_addr, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map frame2 into the page table to replace frame*/
+    error = seL4_ARM_Page_Map(frame2, vspace, map_addr, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* try map frame into the page table at a different vaddr*/
+    error = seL4_ARM_Page_Map(frame, vspace, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_InvalidArgument);
+
+    return sel4test_get_result();
+}
+
+DEFINE_TEST(VSPACE0015, "Test re-using frame cap for different vaddr after range unmap", test_two_frames_same_vaddr, true)
+
+#endif
 
 static int
 test_asid_pool_make(env_t env)
