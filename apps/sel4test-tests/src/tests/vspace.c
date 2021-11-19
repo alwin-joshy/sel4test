@@ -176,8 +176,14 @@ static int test_range_unmap_small(env_t env) {
         error = seL4_ARM_Page_Map(frames[i], vspace, map_addr + i * PAGE_SIZE_4K, seL4_AllRights, seL4_ARM_Default_VMAttributes);
         test_error_eq(error, 0);
     }
+    seL4_Word curr_addr = map_addr;
+    while (curr_addr < map_addr + PAGE_SIZE_4K * NPAGE) {
+        seL4_ARM_VSpace_Range_Unmap_t unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, curr_addr, 32);
+        test_error_eq(unmap_ret.error, 0);
+        test_assert(unmap_ret.num == 32);
+        curr_addr = unmap_ret.end_vaddr;
+    }
 
-    error = seL4_ARM_VSpace_Range_Protect(vspace, map_addr, map_addr + NPAGE * PAGE_SIZE_4K);
 
     test_error_eq(error, 0);
 
@@ -227,19 +233,23 @@ static int test_range_unmap_large(env_t env) {
     error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
     test_error_eq(error, seL4_DeleteFirst);
 
-    /* Attempt to unmap the first page with too small a range*/
-    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr, map_addr + PAGE_SIZE_4K);
-    test_error_eq(error, 0);
 
     /* Because a large page is already mapped at this level, we will not be able to map a page table*/
     error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
     test_error_eq(error, seL4_DeleteFirst);
 
+    seL4_Word curr_addr = map_addr;
     seL4_Word end = map_addr + NPAGE_LARGE * (1 << seL4_LargePageBits);
-    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr, end);
-    test_error_eq(error, 0);
 
-    /* Since we unmapped, it we should be able to do a page table map now */
+    while (curr_addr < end) {
+        seL4_ARM_VSpace_Range_Unmap_t unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, curr_addr, 32);
+        test_error_eq(unmap_ret.error, 0);
+        test_assert(unmap_ret.num == 32);
+        curr_addr = unmap_ret.end_vaddr;
+        ZF_LOGE("%llx", curr_addr);
+    }
+
+    /* Since we unmapped we should be able to do a page table map now */
     error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
     test_error_eq(error, 0);
 
@@ -301,8 +311,19 @@ static int test_range_unmap_small_large(env_t env) {
     error = seL4_ARM_PageTable_Map(pt2, vspace, map_addr + (1 << seL4_LargePageBits), seL4_ARM_Default_VMAttributes);
     test_error_eq(error, seL4_DeleteFirst);
 
-    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr, map_addr + 2 * (1 << seL4_LargePageBits));
-    test_error_eq(error, 0);
+    seL4_Word curr_addr = map_addr;
+    seL4_ARM_VSpace_Range_Unmap_t unmap_ret;
+
+    while (curr_addr < map_addr + 256 * PAGE_SIZE_4K) {
+        unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, curr_addr, 32);
+        test_error_eq(unmap_ret.error, 0);
+        test_assert(unmap_ret.num == 32);
+        curr_addr = unmap_ret.end_vaddr;
+    }
+
+    unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr + 1 * (1 << seL4_LargePageBits), 1);
+    test_error_eq(unmap_ret.error, 0);
+    test_assert(unmap_ret.num == 1);
 
     /* Since we unmapped, it we should be able to do a page table map now */
     error = seL4_ARM_PageTable_Map(pt2, vspace, map_addr + (1 << seL4_LargePageBits), seL4_ARM_Default_VMAttributes);
@@ -366,8 +387,9 @@ static int test_reuse_cap(env_t env) {
     test_error_eq(error, seL4_NoError);
 
     /* Unmap it with range unmap instead of page unmap */
-    error = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr_2, map_addr_2 + PAGE_SIZE_4K);
-    test_error_eq(error, 0);
+    seL4_ARM_VSpace_Range_Unmap_t unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr_2, 1);
+    test_error_eq(unmap_ret.error, 0);
+    test_assert(unmap_ret.num == 1);
 
     /* Try to remap the page at a different address */
     error = seL4_ARM_VSpace_Page_Map(vspace, frame, map_addr_3, seL4_AllRights, seL4_ARM_Default_VMAttributes);
