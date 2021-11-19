@@ -370,8 +370,8 @@ static int test_reuse_cap(env_t env) {
     test_error_eq(error, 0);
 
     /* Try to remap the page at a different address */
-    error = seL4_ARM_Page_Map(frame, vspace, map_addr_3, seL4_AllRights, seL4_ARM_Default_VMAttributes);
-    test_error_eq(error, seL4_InvalidArgument);
+    error = seL4_ARM_VSpace_Page_Map(vspace, frame, map_addr_3, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
 
     return sel4test_get_result();
 }
@@ -424,9 +424,13 @@ static int test_two_frames_same_vaddr(env_t env) {
     error = seL4_ARM_Page_Map(frame2, vspace, map_addr, seL4_AllRights, seL4_ARM_Default_VMAttributes);
     test_error_eq(error, seL4_NoError);
 
+    /* Try to map frame 2 to a different address - should fail*/
+    error = seL4_ARM_VSpace_Page_Map(vspace, frame2, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_IllegalOperation);
+
     /* try map frame into the page table at a different vaddr*/
-    error = seL4_ARM_Page_Map(frame, vspace, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
-    test_error_eq(error, seL4_InvalidArgument);
+    error = seL4_ARM_VSpace_Page_Map(vspace, frame, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
 
     return sel4test_get_result();
 }
