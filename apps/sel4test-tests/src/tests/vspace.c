@@ -178,10 +178,13 @@ static int test_range_unmap_small(env_t env) {
     }
     seL4_Word curr_addr = map_addr;
     while (curr_addr < map_addr + PAGE_SIZE_4K * NPAGE) {
-        seL4_ARM_VSpace_Range_Unmap_t unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, curr_addr, 32);
-        test_error_eq(unmap_ret.error, 0);
-        test_assert(unmap_ret.num == 32);
-        curr_addr = unmap_ret.end_vaddr;
+        seL4_ARM_VSpace_Range_Remap_t remap_ret = seL4_ARM_VSpace_Range_Remap(vspace, curr_addr, 32, seL4_NoRights);
+        test_error_eq(remap_ret.error, 0);
+        test_assert(remap_ret.num == 32);
+        remap_ret = seL4_ARM_VSpace_Range_Remap(vspace, curr_addr, 32, seL4_AllRights);
+        test_error_eq(remap_ret.error, 0);
+        test_assert(remap_ret.num == 32);
+        curr_addr = remap_ret.end_vaddr;
     }
 
 
@@ -242,11 +245,10 @@ static int test_range_unmap_large(env_t env) {
     seL4_Word end = map_addr + NPAGE_LARGE * (1 << seL4_LargePageBits);
 
     while (curr_addr < end) {
-        seL4_ARM_VSpace_Range_Unmap_t unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, curr_addr, 32);
+        seL4_ARM_VSpace_Range_Remap_t unmap_ret = seL4_ARM_VSpace_Range_Remap(vspace, curr_addr, 32, seL4_AllRights);
         test_error_eq(unmap_ret.error, 0);
         test_assert(unmap_ret.num == 32);
         curr_addr = unmap_ret.end_vaddr;
-        ZF_LOGE("%llx", curr_addr);
     }
 
     /* Since we unmapped we should be able to do a page table map now */
@@ -312,16 +314,16 @@ static int test_range_unmap_small_large(env_t env) {
     test_error_eq(error, seL4_DeleteFirst);
 
     seL4_Word curr_addr = map_addr;
-    seL4_ARM_VSpace_Range_Unmap_t unmap_ret;
+    seL4_ARM_VSpace_Range_Remap_t unmap_ret;
 
     while (curr_addr < map_addr + 256 * PAGE_SIZE_4K) {
-        unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, curr_addr, 32);
+        unmap_ret = seL4_ARM_VSpace_Range_Remap(vspace, curr_addr, 32, seL4_AllRights);
         test_error_eq(unmap_ret.error, 0);
         test_assert(unmap_ret.num == 32);
         curr_addr = unmap_ret.end_vaddr;
     }
 
-    unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr + 1 * (1 << seL4_LargePageBits), 1);
+    unmap_ret = seL4_ARM_VSpace_Range_Remap(vspace, map_addr + 1 * (1 << seL4_LargePageBits), 1, seL4_AllRights);
     test_error_eq(unmap_ret.error, 0);
     test_assert(unmap_ret.num == 1);
 
@@ -387,7 +389,7 @@ static int test_reuse_cap(env_t env) {
     test_error_eq(error, seL4_NoError);
 
     /* Unmap it with range unmap instead of page unmap */
-    seL4_ARM_VSpace_Range_Unmap_t unmap_ret = seL4_ARM_VSpace_Range_Unmap(vspace, map_addr_2, 1);
+    seL4_ARM_VSpace_Range_Remap_t unmap_ret = seL4_ARM_VSpace_Range_Remap(vspace, map_addr_2, 1, seL4_AllRights);
     test_error_eq(unmap_ret.error, 0);
     test_assert(unmap_ret.num == 1);
 
@@ -448,9 +450,9 @@ static int test_two_frames_same_vaddr(env_t env) {
 
     /* Try to map frame 2 to a different address - should fail*/
     error = seL4_ARM_VSpace_Page_Map(vspace, frame2, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
-    test_error_eq(error, seL4_IllegalOperation);
+    test_error_eq(error, seL4_InvalidArgument);
 
-    /* try map frame into the page table at a different vaddr*/
+    /* try map frame at a different vaddr*/
     error = seL4_ARM_VSpace_Page_Map(vspace, frame, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
     test_error_eq(error, seL4_NoError);
 
@@ -459,6 +461,60 @@ static int test_two_frames_same_vaddr(env_t env) {
 
 DEFINE_TEST(VSPACE0015, "Test re-using frame cap for different vaddr after range unmap", test_two_frames_same_vaddr, true)
 
+static int test_remap_del_pt(env_t env) {
+    seL4_Word map_addr = 0x10000000;
+    seL4_Word map_addr_2 = map_addr + 1024 * PAGE_SIZE_4K;
+    int error;
+
+    seL4_CPtr pgd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageGlobalDirectoryObject, 0);
+    seL4_CPtr pud = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageUpperDirectoryObject, 0);
+    seL4_CPtr pd = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageDirectoryObject, 0);
+    seL4_CPtr pt = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+    seL4_CPtr pt2 = vka_alloc_object_leaky(&env->vka, seL4_ARM_PageTableObject, 0);
+    seL4_CPtr frame = vka_alloc_object_leaky(&env->vka, seL4_ARM_SmallPageObject, 0);
+
+    test_assert((seL4_PGDBits == 0) || pgd != 0);
+    test_assert(pud != 0);
+    test_assert(pd != 0);
+    test_assert(pt != 0);
+    test_assert(pt2 != 0);
+    test_assert(frame != 0);
+
+    seL4_CPtr vspace = (seL4_PGDBits == 0) ? pud : pgd;
+    seL4_ARM_ASIDPool_Assign(env->asid_pool, vspace);
+#if seL4_PGDBits > 0
+    /* map pud into page global directory */
+    error = seL4_ARM_PageUpperDirectory_Map(pud, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+#endif
+
+    /* map pd into page upper directory */
+    error = seL4_ARM_PageDirectory_Map(pd, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map page table into page directory */
+    error = seL4_ARM_PageTable_Map(pt, vspace, map_addr, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    /* map page table into page directory */
+    error = seL4_ARM_PageTable_Map(pt2, vspace, map_addr_2, seL4_ARM_Default_VMAttributes);
+    ZF_LOGE("%d", error);
+    test_error_eq(error, seL4_NoError);
+
+    /* map frame into the page table */
+    error = seL4_ARM_Page_Map(frame, vspace, map_addr, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, seL4_NoError);
+
+    error = seL4_ARM_PageTable_Unmap(pt);
+    test_error_eq(error, 0);
+
+    error = seL4_ARM_VSpace_Page_Map(vspace, frame, map_addr_2, seL4_AllRights, seL4_ARM_Default_VMAttributes);
+    test_error_eq(error, 0);
+
+    return sel4test_get_result();
+}
+
+DEFINE_TEST(VSPACE0016, "Test re-mapping a stale frame cap after unmapping page table", test_remap_del_pt, true)
 #endif
 
 static int
