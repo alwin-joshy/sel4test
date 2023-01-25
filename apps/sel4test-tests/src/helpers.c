@@ -469,7 +469,6 @@ inline void sel4test_sleep(env_t env, uint64_t ns)
      * other(s). This is a limitation, and the current interface won't handle it. Only
      * one thread can request/wait/sleep/wakeup on a time.
      */
-
     sel4test_send_time_request(env->endpoint, ns, SEL4TEST_TIME_TIMEOUT, TIMEOUT_RELATIVE);
     /* The tests have a timer_notification that they can wait on by default.
      * sel4-driver will notify us on timer_notification when it gets a timer interrupt

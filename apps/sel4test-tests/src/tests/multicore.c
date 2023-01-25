@@ -17,6 +17,7 @@
 static int counter_func(volatile seL4_Word *counter)
 {
     while (1) {
+        // ZF_LOGE("Here counter");
         (*counter)++;
     }
     return 0;
@@ -45,6 +46,7 @@ int smp_test_tcb_resume(env_t env)
     /* Now, counter should have moved. */
     test_check(counter != old_counter);
 
+
     /* Suspend the thread, and move it to new core. */
     seL4_TCB_Suspend(get_helper_tcb(&t1));
     set_helper_affinity(env, &t1, 1);
@@ -58,6 +60,7 @@ int smp_test_tcb_resume(env_t env)
     test_check(counter == old_counter);
     old_counter = counter;
 
+    // ZF_LOGE("Here");
     /* Resume the thread and check it does move. */
     seL4_TCB_Resume(get_helper_tcb(&t1));
     sel4test_sleep(env, 10 * NS_IN_MS);
@@ -337,3 +340,51 @@ int smp_test_tcb_clh(env_t env)
 }
 DEFINE_TEST(MULTICORE0004, "Test core stalling is behaving properly (flaky)", smp_test_tcb_clh,
             CONFIG_MAX_NUM_NODES > 1)
+
+
+static void waiter_fn(seL4_CPtr notification) {
+    seL4_Wait(notification, NULL);
+    ZF_LOGE("madeit");
+}
+
+static void signal_fn(seL4_CPtr notification) {
+    seL4_Signal(notification);
+} 
+
+int smp_test_multicore_signal(env_t env) {
+    helper_thread_t high_prio_signaller;
+    helper_thread_t low_prio_waiter; 
+    volatile seL4_Word counter;
+    ZF_LOGD("smp test multicore signal\n");
+    /* */
+    create_helper_thread(env, &high_prio_signaller);
+    create_helper_thread(env, &low_prio_waiter);
+    
+    set_helper_priority(env, &high_prio_signaller, 100);
+    set_helper_affinity(env, &high_prio_signaller, 0);
+
+    set_helper_priority(env, &low_prio_waiter, 99);
+    set_helper_affinity(env, &low_prio_waiter, 1);
+
+    seL4_CPtr notification = vka_alloc_notification_leaky(&env->vka);
+    
+    /* Start the waiter */
+    start_helper(env, &low_prio_waiter, (helper_fn_t) waiter_fn, notification, 0, 0, 0);
+
+    /* Let the waiter thread run. */
+    sel4test_sleep(env, 10 * NS_IN_MS);
+
+    start_helper(env, &high_prio_signaller, (helper_fn_t) signal_fn, notification, 0, 0, 0);
+
+    /* Let it run again on the current core. */
+    sel4test_sleep(env, 10 * NS_IN_MS);
+
+    /* Done. */
+    cleanup_helper(env, &high_prio_signaller);
+    cleanup_helper(env, &low_prio_waiter);
+
+    return sel4test_get_result();
+}
+
+DEFINE_TEST(MULTICORE0006, "Test multicore signalling", smp_test_multicore_signal,
+            config_set(CONFIG_HAVE_TIMER) &&CONFIG_MAX_NUM_NODES > 1)
