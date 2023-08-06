@@ -297,6 +297,9 @@ static int collate_tests(testcase_t *tests_in, int n, testcase_t *tests_out[], i
 
 void sel4test_run_tests(struct driver_env *e)
 {
+    int a = 25;
+    (void) a;
+
     /* Iterate through test types. */
     int max_test_types = (int)(__stop__test_type - __start__test_type);
     struct test_type *test_types[max_test_types];
@@ -324,6 +327,13 @@ void sel4test_run_tests(struct driver_env *e)
     regex_t reg;
     int error = regcomp(&reg, CONFIG_TESTPRINTER_REGEX, REG_EXTENDED | REG_NOSUB);
     ZF_LOGF_IF(error, "Error compiling regex \"%s\"\n", CONFIG_TESTPRINTER_REGEX);
+
+    /* Testing GDB */
+    printf("About to trigger an irrecoverable fault\n");
+    arm_sys_send_null(seL4_SysDebugEnterKGDB, 0, seL4_MessageInfo_new(0, 0, 0, 0).words[0]);
+    // asm volatile(
+    //     ".word 0xe7f000f0\n\t" /* Guaranteed to be undefined by ARM. */
+    // );
 
     int skipped_tests = 0;
     /* get all the tests in the test case section in the driver */
