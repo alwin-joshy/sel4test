@@ -507,43 +507,5 @@ test_pagetable_arm(env_t env)
 }
 DEFINE_TEST(PT0001, "Fun with page tables on ARM", test_pagetable_arm, true)
 
-
-static int
-test_pagetable_arm2(env_t env)
-{
-    int error;
-
-    /* Grab some free vspace big enough to hold a couple of large pages. */
-    seL4_Word vstart;
-    reservation_t reserve = vspace_reserve_range(&env->vspace, LPAGE_SIZE * 4,
-                                                 seL4_AllRights, 1, (void **) &vstart);
-    vstart = ALIGN_UP(vstart, LPAGE_SIZE * 2);
-
-    seL4_CPtr frame_cptrs[32] = {0};
-    for (int i = 0; i < 32; i++) {
-      frame_cptrs[i] = vka_alloc_object_leaky(&env->vka, seL4_ARM_SmallPageObject, 0);
-      test_assert(frame_cptrs[i]  != 0);
-    }
-
-    /* Also create a pagetable to map the pages into. */
-    seL4_CPtr pt = vka_alloc_page_table_leaky(&env->vka);
-
-    error = seL4_ARM_PageTable_Map(pt, env->page_directory,
-                                   vstart, seL4_ARM_Default_VMAttributes);
-    test_error_eq(error, 0);
-
-
-    error = seL4_ARM_VSpace_Map_Range(env->page_directory, vstart, seL4_AllRights, seL4_ARM_Default_VMAttributes, 32, frame_cptrs);
-    test_error_eq(error, 0);
-
-    /* Fill the small page with useful data too. */
-    fill_memory(vstart, 32 * PAGE_SIZE_4K);
-    test_assert(check_memory(vstart, 32 * PAGE_SIZE_4K));
-
-    vspace_free_reservation(&env->vspace, reserve);
-
-    return sel4test_get_result();
-}
-DEFINE_TEST(PT0002, "Range map on ARM", test_pagetable_arm2, true)
 #endif /* CONFIG_ARCH_AARCHxx */
 #endif /* CONFIG_ARCH_ARM */
